@@ -135,6 +135,21 @@ git apply ./cage-rescue-<ts>-uncommitted.patch      # recover uncommitted change
 
 ---
 
+## Reaching a server in the cage (ports)
+
+cage publishes a host port (default **`4000`**, localhost-only) into the container, sets
+`PORT` to it, and tells the agent to bind any web server to `0.0.0.0:4000`. So when Claude
+starts a server, you open **http://localhost:4000** on your Mac.
+
+This matters because a server the agent runs *inside* the container is otherwise invisible to
+your Mac — and "I verified `localhost:3000` returns 200" is true *in the container* but
+unreachable from outside. cage's injected guidance makes the agent bind to the published
+port and report the URL you can actually open.
+
+Change or add ports with `export CAGE_PORTS="4000 5173"` in `cage.config` (space-separated;
+`""` publishes nothing). Ports are fixed when the container is created, so changing this
+takes effect on the next `cage` run.
+
 ## Session memory (`.cage` breadcrumb)
 
 Because every cage is ephemeral and your dir is only ever a *copy*, cage leaves a small

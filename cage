@@ -43,6 +43,7 @@ SYNC_SETTINGS="${CAGE_SYNC_SETTINGS:-0}"             # also copy ~/.claude/setti
 COPY_EXCLUDES="${CAGE_COPY_EXCLUDES:-node_modules .venv venv vendor/bundle .bundle target .next .nuxt __pycache__ .pytest_cache .gradle .DS_Store}"
 BREADCRUMB="${CAGE_BREADCRUMB:-1}"                   # leave a .cage note of what each session did
 NOTE_FILE="${CAGE_NOTE_FILE:-.cage}"                 # breadcrumb filename in the project dir
+PORTS="${CAGE_PORTS:-4000}"                          # host port(s) to publish (space-separated; "" = none)
 
 # Injected into the agent (via --append-system-prompt) so it reads/updates the breadcrumb.
 SYS_NOTE="You are running inside \"cage\", a throwaway Docker container — run commands freely; the host machine is safe and unaffected. A file at /work/${NOTE_FILE} records what previous cage sessions did in this directory. Read it first for context. Before you finish, append a short dated entry to /work/${NOTE_FILE} summarizing what you did and any follow-ups, formatted as:
@@ -189,23 +190,30 @@ spin_up() {
   local name="cage_$(proj_name)_$(proj_hash)"
   docker rm -f "$name" >/dev/null 2>&1 || true   # clear any stale container for this dir
 
+  # Publish cage's port(s) to the host (bound to localhost only — not exposed to your LAN).
+  # PORT is set to the first so frameworks that honor it pick it up automatically.
+  local p; local pargs=(); local first="${PORTS%% *}"
+  for p in $PORTS; do pargs+=( -p "127.0.0.1:$p:$p" ); done
+
   log "Creating ephemeral container from ${tag}"
   CID="$(docker create \
     --name "$name" \
     --hostname "cage" \
     -w /work \
+    ${pargs[@]+"${pargs[@]}"} \
     -v "${CLAUDE_VOLUME}:${CLAUDE_DIR}" \
     -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
     -e GH_TOKEN="${GH_TOKEN:-}" \
     -e GIT_USER_NAME="${GIT_USER_NAME:-}" \
     -e GIT_USER_EMAIL="${GIT_USER_EMAIL:-}" \
+    ${first:+-e PORT="$first"} \
     "$tag" sleep infinity)"
 
   log "Copying working tree into the container (host disk untouched)…"
   # Bare patterns (no leading */) match at any depth on both bsdtar and GNU tar.
   local n; local excl=()
   for n in $COPY_EXCLUDES; do excl+=( --exclude="$n" ); done
-  tar -C "$PROJ" "${excl[@]}" -cf - . | docker cp - "$CID:/work"
+  tar -C "$PROJ" ${excl[@]+"${excl[@]}"} -cf - . | docker cp - "$CID:/work"
 
   docker start "$CID" >/dev/null   # entrypoint chowns /work + sets git identity / GH_TOKEN
 
@@ -308,9 +316,21 @@ cmd_run() {
   fi
   local tag; tag="$(ensure_image)"
   spin_up "$tag"
+
+  # Build the agent's appended system prompt from the breadcrumb + port guidance.
+  local first="${PORTS%% *}" sysnote=""
+  [[ "$BREADCRUMB" == 1 ]] && sysnote="$SYS_NOTE"
+  if [[ -n "$PORTS" ]]; then
+    local p
+    for p in $PORTS; do log "🌐 Published http://localhost:$p  → have the server bind 0.0.0.0:$p"; done
+    sysnote="${sysnote:+$sysnote
+
+}WEB SERVERS: bind to 0.0.0.0 on port ${first} (env PORT=${first} is set). ONLY host port(s) [${PORTS}] are published and reachable by the user at http://localhost:${first}. A server bound to 127.0.0.1, or to any other port, is NOT reachable from the user's machine — verifying it from inside the container proves nothing. Do not report a server as working unless it is bound to 0.0.0.0:${first}."
+  fi
+
   log "Launching Claude Code (--dangerously-skip-permissions)…"
   local cargs=( --dangerously-skip-permissions )
-  [[ "$BREADCRUMB" == 1 ]] && cargs+=( --append-system-prompt "$SYS_NOTE" )
+  [[ -n "$sysnote" ]] && cargs+=( --append-system-prompt "$sysnote" )
   cargs+=( "$@" )
   trap '' INT                       # let Claude own Ctrl-C; don't kill cage
   docker exec -it "$CID" bash -lc 'cd /work && exec claude "$@"' bash "${cargs[@]}" || true

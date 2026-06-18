@@ -31,6 +31,10 @@
 # excluded from git. Set to 0 to disable:
 # export CAGE_BREADCRUMB=1
 # export CAGE_NOTE_FILE=.cage
+# Host port(s) published from the cage so a server you start inside is reachable from your
+# Mac at http://localhost:<port>. Space-separated; set to "" to publish nothing. PORT is set
+# inside the container to the first one, and the agent is told to bind 0.0.0.0:<port>.
+# export CAGE_PORTS="4000"
 # Base Node major version used for Claude Code itself:
 # export CAGE_NODE_MAJOR=22
 # Name of the shared Docker volume holding the Claude login:
