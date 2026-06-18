@@ -1,0 +1,4 @@
+# Build context is this templates/ dir; only the Dockerfile + entrypoint are needed.
+*
+!Dockerfile
+!entrypoint.sh

@@ -1,0 +1,12 @@
+# Per-machine secrets & prefs — never commit
+cage.config
+
+# Rescue artifacts dumped by `cage` when work couldn't be pushed
+cage-rescue-*.bundle
+cage-rescue-*.patch
+
+# OS / editor noise
+.DS_Store
+
+# Local Claude Code harness state (per-clone, not part of the tool)
+.claude/settings.local.json

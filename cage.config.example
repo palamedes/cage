@@ -1,0 +1,34 @@
+# cage.config — per-machine secrets & preferences. NEVER commit this file.
+#
+#   cp cage.config.example cage.config        # then edit
+#
+# `cage` sources this from its own install dir, so it's found no matter which project
+# directory you run `cage` in. It's gitignored — keep your secrets here, not in the repo.
+
+# --- Claude Code auth (pick ONE) ------------------------------------------------------
+# (a) API key — zero prompts, bills per-token to your Anthropic Console account:
+# export ANTHROPIC_API_KEY="sk-ant-..."
+# (b) Subscription login — leave the key unset and run `cage login` once; it's stored in
+#     the shared 'cage_claude' volume and reused by every cage (no host creds exposed).
+
+# --- GitHub — enables `git push` (HTTPS) and `gh` (PRs) from inside the cage -----------
+# Easiest: run `cage gh-token` to import from your Mac's gh. Or paste a repo-scoped PAT:
+# export GH_TOKEN="ghp_..."
+
+# --- Git commit identity used INSIDE the cage for the agent's commits ------------------
+# export GIT_USER_NAME="Your Name"
+# export GIT_USER_EMAIL="you@example.com"
+
+# --- Behavior toggles (defaults shown) ------------------------------------------------
+# Pre-install detected dependencies (bundle/yarn/pip/…) before launching Claude:
+# export CAGE_PREINSTALL=1
+# Copy your global ~/.claude/CLAUDE.md + skills/ into the cage (never your credentials):
+# export CAGE_SYNC_GLOBAL_CLAUDE=1
+# Also copy ~/.claude/settings.json (off by default — its hooks/paths may not exist in-cage):
+# export CAGE_SYNC_SETTINGS=0
+# Base Node major version used for Claude Code itself:
+# export CAGE_NODE_MAJOR=22
+# Name of the shared Docker volume holding the Claude login:
+# export CAGE_CLAUDE_VOLUME=cage_claude
+# Heavy, reinstallable dirs kept OUT of the copy into the container:
+# export CAGE_COPY_EXCLUDES="node_modules .venv venv vendor/bundle .bundle target .next .nuxt __pycache__ .pytest_cache .gradle .DS_Store"
