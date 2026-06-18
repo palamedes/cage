@@ -58,45 +58,38 @@ cage
 ```bash
 git clone https://github.com/palamedes/cage.git ~/cage
 cd ~/cage
-cp cage.config.example cage.config        # then edit (see below)
-
-# symlink onto your PATH so `cage` works from anywhere
-ln -s ~/cage/cage /opt/homebrew/bin/cage  # Apple Silicon Homebrew; pick any dir on $PATH
+./cage setup          # one-time: writes cage.config, imports GitHub token, sets git
+                      # identity, does the Claude login, and symlinks cage onto your PATH
 ```
+
+`cage setup` is interactive and only needs to run once per machine. After it, just `cd`
+into any project and type `cage`.
 
 Requires **Docker Desktop** (running). First build pulls base images + compiles runtimes,
 so it's slow once; cached after.
+
+> **Login is one-time, not per-run.** Your Claude login is stored in a shared Docker volume
+> (`cage_claude`) and reused by every cage. If you skip it in `setup`, the **first** `cage`
+> run auto-prompts the login, then never again (until `cage nuke`).
 
 ---
 
 ## Configure (`cage.config`, gitignored)
 
-`cage.config` lives next to the `cage` script and holds your secrets/prefs — it's read no
+`cage setup` writes all of this for you. The file lives next to the `cage` script, is read no
 matter which directory you run `cage` in, and is **never committed** (this repo is public).
+To change something later, edit `cage.config` directly (`cage config` prints its path) or
+re-run a specific importer:
 
-**Claude auth — pick one:**
+- **Claude auth** — subscription login (`cage login`, stored in the shared `cage_claude`
+  volume, never exposing your host `~/.claude`) **or** an API key
+  (`export ANTHROPIC_API_KEY="sk-ant-..."` for zero prompts, per-token billing).
+- **GitHub** — `cage gh-token` imports a token from your local `gh` (or paste
+  `export GH_TOKEN="ghp_..."`). Enables `git push` + `gh` from inside the cage.
+- **Commit identity** — `export GIT_USER_NAME=…` / `export GIT_USER_EMAIL=…` so the agent's
+  commits are attributed to you.
 
-- **API key:** put `export ANTHROPIC_API_KEY="sk-ant-..."` in `cage.config`. Zero prompts;
-  bills per-token to your Anthropic Console account.
-- **Subscription:** leave the key unset and run `cage login` once. The login is stored in a
-  shared Docker volume (`cage_claude`) and reused by **every** cage on this machine —
-  your real `~/.claude` credentials are never mounted into the reckless container.
-
-**GitHub (to get work out via push):**
-
-```bash
-cage gh-token            # imports a token from your local `gh` into cage.config
-# or paste a repo-scoped PAT:  export GH_TOKEN="ghp_..."
-```
-
-**Commit identity** (so the agent's commits are attributed to you):
-
-```bash
-export GIT_USER_NAME="Your Name"
-export GIT_USER_EMAIL="you@example.com"
-```
-
-Run `cage doctor` to verify Docker, config, Claude auth, and the GitHub token.
+Run `cage doctor` anytime to verify Docker, config, Claude auth, and the GitHub token.
 
 ---
 
@@ -106,8 +99,9 @@ Run `cage doctor` to verify Docker, config, Claude auth, and the GitHub token.
 |---|---|
 | `cage [args]` | Build/reuse this dir's image, copy it in, launch Claude (`--dangerously-skip-permissions`). Extra args pass through to `claude`. Rescues unpushed work on exit. |
 | `cage shell` | Same spin-up, but drop into a bash shell instead of Claude. |
+| `cage setup` | One-time interactive bootstrap (config, GitHub token, git identity, Claude login, PATH symlink). |
 | `cage gh-token` | Import your GitHub token from `gh` into `cage.config`. |
-| `cage login` | One-time Claude subscription login into the shared volume. |
+| `cage login` | (Re)do the Claude login into the shared volume — usually automatic on first run. |
 | `cage doctor` | Check Docker, config, Claude auth, GitHub token. |
 | `cage detect` | Show detected runtimes / image tag / install commands for this dir. |
 | `cage build` / `cage rebuild` | Build this dir's image (cache / `--no-cache`) without launching. |

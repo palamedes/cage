@@ -95,6 +95,37 @@ ensure_image() {
   printf '%s' "$tag"
 }
 
+# --- Claude auth (one-time; persists in the shared volume) -----------------------------
+# The base image is enough to run Claude for login; build it if it doesn't exist yet.
+ensure_base_image() {
+  local base; base="$(image_tag "")"
+  image_exists "$base" || build_image "$base" ""
+  printf '%s' "$base"
+}
+
+# True if the shared volume already holds Claude credentials (.credentials.json).
+volume_has_login() {
+  docker volume inspect "$CLAUDE_VOLUME" >/dev/null 2>&1 || return 1
+  docker run --rm --entrypoint test -v "${CLAUDE_VOLUME}:/c" "$1" -s /c/.credentials.json
+}
+
+do_login() {
+  local base="$1"
+  log "Launching Claude for a one-time login → pick 'Claude account with subscription', then /exit when done."
+  docker run --rm -it -v "${CLAUDE_VOLUME}:${CLAUDE_DIR}" "$base" bash -lc 'claude' || true
+}
+
+# Make sure Claude can authenticate before we build/launch. No-op if an API key is set or
+# the shared volume already has a login — so this only ever prompts once per machine.
+ensure_login() {
+  [[ -n "${ANTHROPIC_API_KEY:-}" ]] && return 0
+  local base; base="$(ensure_base_image)"
+  if volume_has_login "$base"; then return 0; fi
+  warn "No Claude login for cage yet — doing a one-time login (saved to the shared '$CLAUDE_VOLUME' volume, reused forever after)."
+  do_login "$base"
+  volume_has_login "$base" || warn "Login not detected — Claude may prompt again when it launches."
+}
+
 # --- The container lifecycle ----------------------------------------------------------
 CID=""
 cleanup() { [[ -n "$CID" ]] && docker rm -f "$CID" >/dev/null 2>&1 || true; }
@@ -200,6 +231,7 @@ cmd_run() {
     printf '  Run `git init` here first? [y/N] '; local a=""; read -r a || a=n
     [[ "$a" == y || "$a" == Y ]] && git -C "$PROJ" init || die "Aborting — initialize git first."
   }
+  ensure_login                      # one-time; no-op once the shared volume has a login
   local tag; tag="$(ensure_image)"
   spin_up "$tag"
   log "Launching Claude Code (--dangerously-skip-permissions)…"
@@ -238,22 +270,67 @@ cmd_gh_token() {
   log "Imported GH_TOKEN into cage.config (len ${#tok}; not shown). Enables 'git push' + 'gh' in the cage."
 }
 
-cmd_login() {
+cmd_login() { need_docker; do_login "$(ensure_base_image)"; }
+
+# --- One-time interactive setup -------------------------------------------------------
+_ask()   { local p="$1" d="${2:-}" a=""; if [[ -n "$d" ]]; then printf '  %s [%s]: ' "$p" "$d"; else printf '  %s: ' "$p"; fi; read -r a </dev/tty || a=""; printf '%s' "${a:-$d}"; }
+_yesno() { local a=""; printf '  %s [Y/n]: ' "$1"; read -r a </dev/tty || a=""; case "${a:-y}" in y|Y|yes|YES) return 0;; *) return 1;; esac; }
+
+cmd_setup() {
   need_docker
-  log "Opening a one-time Claude login in the shared volume (${CLAUDE_VOLUME}). Run 'claude' then '/login'."
-  docker run --rm -it \
-    -v "${CLAUDE_VOLUME}:${CLAUDE_DIR}" \
-    -e CLAUDE_CONFIG_DIR="$CLAUDE_DIR" \
-    -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
-    "$(image_tag "")" bash -lc 'claude'
+  log "cage setup — one-time configuration (writes $HERE/cage.config, gitignored)."
+  echo
+
+  # 1. cage.config
+  if [[ -f "$HERE/cage.config" ]]; then warn "cage.config already exists — updating it in place."
+  else cp "$HERE/cage.config.example" "$HERE/cage.config"; log "Created cage.config from the example."; fi
+
+  # 2. GitHub token (for git push + gh from inside the cage)
+  if command -v gh >/dev/null 2>&1 && gh auth token >/dev/null 2>&1; then
+    set_config GH_TOKEN "$(gh auth token)"
+    log "Imported GH_TOKEN from gh (enables push + PRs in the cage)."
+  else
+    warn "gh not logged in — skipping GitHub token. Run 'gh auth login' then 'cage gh-token' later."
+  fi
+
+  # 3. Git commit identity (default to your host git config)
+  local dn de
+  dn="$(_ask 'Git commit name'  "$(git config --global user.name  2>/dev/null)")"
+  de="$(_ask 'Git commit email' "$(git config --global user.email 2>/dev/null)")"
+  [[ -n "$dn" ]] && set_config GIT_USER_NAME  "$dn"
+  [[ -n "$de" ]] && set_config GIT_USER_EMAIL "$de"
+
+  # 4. Claude auth
+  echo; echo "  Claude auth:  1) subscription login (Pro/Max)   2) API key"
+  local choice; choice="$(_ask 'Choose 1 or 2' '1')"
+  if [[ "$choice" == 2 ]]; then
+    local k=""; printf '  Paste ANTHROPIC_API_KEY (hidden): '; read -rs k </dev/tty || k=""; echo
+    [[ -n "$k" ]] && { set_config ANTHROPIC_API_KEY "$k"; ANTHROPIC_API_KEY="$k"; log "Saved ANTHROPIC_API_KEY."; } || warn "No key entered — skipped."
+  else
+    if _yesno "Log in to Claude now?"; then do_login "$(ensure_base_image)"; else log "Skipped — cage will prompt for login on first run."; fi
+  fi
+
+  # 5. PATH symlink
+  if ! command -v cage >/dev/null 2>&1 || [[ "$(command -v cage)" != "$HERE/cage" && ! -L "$(command -v cage 2>/dev/null)" ]]; then
+    local d; for d in /opt/homebrew/bin /usr/local/bin "$HOME/bin"; do
+      if [[ -d "$d" && -w "$d" ]]; then
+        if _yesno "Symlink 'cage' onto your PATH at $d/cage?"; then ln -sf "$HERE/cage" "$d/cage" && log "Symlinked $d/cage"; fi
+        break
+      fi
+    done
+  fi
+
+  echo; log "Setup complete."; echo; cmd_doctor
 }
 
 cmd_doctor() {
   need_docker && log "Docker daemon: OK"
   if [[ -f "$HERE/cage.config" ]]; then log "cage.config: present"; else warn "cage.config missing — cp cage.config.example cage.config"; fi
+  local base; base="$(image_tag "")"
   if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then log "Claude auth: ANTHROPIC_API_KEY set"
-  elif docker volume inspect "$CLAUDE_VOLUME" >/dev/null 2>&1; then log "Claude auth: shared volume '$CLAUDE_VOLUME' exists (subscription login)"
-  else warn "Claude auth: no API key and no login volume yet — set ANTHROPIC_API_KEY or run 'cage login'"; fi
+  elif image_exists "$base" && volume_has_login "$base" >/dev/null 2>&1; then log "Claude auth: logged in (shared volume '$CLAUDE_VOLUME')"
+  elif docker volume inspect "$CLAUDE_VOLUME" >/dev/null 2>&1; then warn "Claude auth: volume exists but no login detected — run 'cage login'"
+  else warn "Claude auth: not set up yet — run 'cage setup' (or 'cage login')"; fi
   if [[ -n "${GH_TOKEN:-}" ]]; then log "GitHub: GH_TOKEN set (push + PRs work)"; else warn "GitHub: no GH_TOKEN — run 'cage gh-token' to enable push/PRs"; fi
 }
 
@@ -287,11 +364,14 @@ USAGE
   cage [args]        Build/reuse this dir's image, copy it into an ephemeral container,
                      and launch Claude Code (--dangerously-skip-permissions). Extra args
                      pass through to claude. On exit, rescues any unpushed work.
+                     (First ever run auto-prompts a one-time Claude login.)
   cage shell         Same spin-up, but drop into a bash shell instead of Claude.
 
 SETUP
+  cage setup         One-time interactive bootstrap: writes cage.config (GitHub token, git
+                     identity, Claude auth) and offers to symlink cage onto your PATH.
   cage gh-token      Import your GitHub token from 'gh' into cage.config (enables push/PRs).
-  cage login         One-time Claude subscription login into the shared volume.
+  cage login         (Re)do the Claude login into the shared volume. Usually automatic.
   cage doctor        Check Docker, config, Claude auth, and GitHub token.
   cage config        Print the path to cage.config.
 
@@ -302,14 +382,14 @@ IMAGES
   cage ps            List cage containers and images.
   cage nuke          Remove all cage containers, images, and the Claude login volume.
 
-First run on a machine:  cp $HERE/cage.config.example $HERE/cage.config   (then edit)
-Symlink onto PATH:       ln -s $HERE/cage /opt/homebrew/bin/cage
+First run on a machine:  cage setup
 EOF
 }
 
 case "${1:-}" in
   ""|run)            shift || true; cmd_run "$@" ;;
   shell|console)     cmd_shell ;;
+  setup)             cmd_setup ;;
   gh-token)          cmd_gh_token ;;
   login)             cmd_login ;;
   doctor)            cmd_doctor ;;
