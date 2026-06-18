@@ -135,6 +135,26 @@ git apply ./cage-rescue-<ts>-uncommitted.patch      # recover uncommitted change
 
 ---
 
+## Session memory (`.cage` breadcrumb)
+
+Because every cage is ephemeral and your dir is only ever a *copy*, cage leaves a small
+`.cage` file in the project dir on the host so future cages know what happened here:
+
+- On spin-up, cage prints the previous notes and makes `.cage` available at `/work/.cage`.
+- During the session, Claude is told (via an appended system prompt) to read `/work/.cage`
+  for context and append a short dated summary of what it did before finishing.
+- On exit, cage appends a mechanical line (commits / branches pushed) and copies the file
+  back to the host.
+
+```
+## 2026-06-18 10:42
+_Added rate-limiting to the API and a spec; pushed je-fix/ratelimit. TODO: wire the Redis backend._
+— cage: pushed je-fix/ratelimit (a1b2c3d); 2 commit(s), 5 file(s)
+```
+
+`.cage` is auto-excluded from git (`.git/info/exclude`), so it never gets committed or
+clutters `git status`. Disable with `export CAGE_BREADCRUMB=0` in `cage.config`.
+
 ## Notes & limitations
 
 - **Ephemeral by design.** Each `cage` is a fresh container destroyed on exit. In-container
