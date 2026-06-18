@@ -109,21 +109,18 @@ volume_has_login() {
   docker run --rm --entrypoint test -v "${CLAUDE_VOLUME}:/c" "$1" -s /c/.credentials.json
 }
 
+# Explicit login session (used by `cage login` and `cage setup`). Normal `cage` runs don't
+# need this — Claude prompts for login inline on first use and persists it to the volume.
 do_login() {
   local base="$1"
   log "Launching Claude for a one-time login → pick 'Claude account with subscription', then /exit when done."
   docker run --rm -it -v "${CLAUDE_VOLUME}:${CLAUDE_DIR}" "$base" bash -lc 'claude' || true
 }
 
-# Make sure Claude can authenticate before we build/launch. No-op if an API key is set or
-# the shared volume already has a login — so this only ever prompts once per machine.
-ensure_login() {
+# Returns 0 if Claude is ready to auth without prompting (API key set, or volume has a login).
+have_login() {
   [[ -n "${ANTHROPIC_API_KEY:-}" ]] && return 0
-  local base; base="$(ensure_base_image)"
-  if volume_has_login "$base"; then return 0; fi
-  warn "No Claude login for cage yet — doing a one-time login (saved to the shared '$CLAUDE_VOLUME' volume, reused forever after)."
-  do_login "$base"
-  volume_has_login "$base" || warn "Login not detected — Claude may prompt again when it launches."
+  docker volume inspect "$CLAUDE_VOLUME" >/dev/null 2>&1
 }
 
 # --- The container lifecycle ----------------------------------------------------------
@@ -156,6 +153,10 @@ spin_up() {
   tar -C "$PROJ" "${excl[@]}" -cf - . | docker cp - "$CID:/work"
 
   docker start "$CID" >/dev/null   # entrypoint chowns /work + sets git identity / GH_TOKEN
+
+  # Guarantee /work is a git repo so the agent can always commit (no host changes). Dirs that
+  # are repo roots already brought their .git; subdirs / non-repos get a fresh one here.
+  docker exec "$CID" bash -lc 'cd /work && [ -d .git ] || git init -q' || true
 
   sync_global_claude
 
@@ -226,12 +227,19 @@ dump_rescue() {
 # --- Commands -------------------------------------------------------------------------
 cmd_run() {
   need_docker
-  [[ -d "$PROJ/.git" ]] || git -C "$PROJ" rev-parse --git-dir >/dev/null 2>&1 || {
-    warn "$PROJ is not a git repository — the agent can't push work out."
-    printf '  Run `git init` here first? [y/N] '; local a=""; read -r a || a=n
-    [[ "$a" == y || "$a" == Y ]] && git -C "$PROJ" init || die "Aborting — initialize git first."
-  }
-  ensure_login                      # one-time; no-op once the shared volume has a login
+  # Git context — informational only. The cage always gets a usable repo in /work (spin_up
+  # runs `git init` there if needed), so cage works in any dir without prompting or touching
+  # your host. .git is copied only when THIS dir is a repo root.
+  local root; root="$(git -C "$PROJ" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ -z "$root" ]]; then
+    warn "Not a git repo — the cage will 'git init' /work. Add a remote inside to push, or use the rescue dump."
+  elif [[ "$root" != "$PROJ" ]]; then
+    warn "This is a SUBDIRECTORY of the repo at: $root"
+    warn "Only this dir is copied (a fresh repo in the cage — no history/remote). Run cage at the repo root for full git."
+  fi
+  if ! have_login; then
+    log "First run: Claude will ask you to log in once, in the session below (saved to '$CLAUDE_VOLUME' and reused next time)."
+  fi
   local tag; tag="$(ensure_image)"
   spin_up "$tag"
   log "Launching Claude Code (--dangerously-skip-permissions)…"
