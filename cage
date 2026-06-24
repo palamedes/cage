@@ -255,8 +255,14 @@ sync_global_claude() {
   local src="$HOME/.claude"
   [[ -f "$src/CLAUDE.md" ]] && docker cp "$src/CLAUDE.md" "$CID:$CLAUDE_DIR/CLAUDE.md" >/dev/null 2>&1 || true
   [[ -d "$src/skills"   ]] && docker cp "$src/skills"   "$CID:$CLAUDE_DIR/"          >/dev/null 2>&1 || true
-  [[ "$SYNC_SETTINGS" == 1 && -f "$src/settings.json" ]] && \
+  if [[ "$SYNC_SETTINGS" == 1 && -f "$src/settings.json" ]]; then
     docker cp "$src/settings.json" "$CID:$CLAUDE_DIR/settings.json" >/dev/null 2>&1 || true
+  else
+    # Don't copy the whole host settings.json (its hooks/paths don't apply in-container), but
+    # always disable commit/PR attribution so the in-cage agent never claims credit for your work.
+    local nocredit='{"includeCoAuthoredBy":false,"attribution":{"commit":"","pr":""}}'
+    docker exec -i -u root "$CID" bash -lc "cat > '$CLAUDE_DIR/settings.json'" <<<"$nocredit" >/dev/null 2>&1 || true
+  fi
   docker exec -u root "$CID" chown -R cage:cage "$CLAUDE_DIR" >/dev/null 2>&1 || true
 }
 
