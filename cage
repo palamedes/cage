@@ -456,6 +456,38 @@ cmd_config() {
   else warn "No cage.config yet. Create it with:"; echo "  cp \"$HERE/cage.config.example\" \"$HERE/cage.config\""; fi
 }
 
+# cage paste — bridge the macOS clipboard image into the running cage. Containers can't reach the
+# host pasteboard, so pasting an image inside the caged Claude does nothing. This grabs the
+# clipboard PNG via osascript (no extra installs), drops it into /work, and prints the path to
+# reference in the caged Claude. Run it from another terminal in the same project directory.
+cmd_paste() {
+  need_docker
+  command -v osascript >/dev/null 2>&1 || die "cage paste is a macOS helper and needs 'osascript'."
+  local name="cage_$(proj_name)_$(proj_hash)"
+  docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null | grep -q true \
+    || die "No running cage for this directory. Start one with 'cage' first, then run 'cage paste' from another terminal here."
+
+  local tmp="/tmp/cage-paste-$$.png"; rm -f "$tmp"
+  # Coerce the clipboard to PNG and write it out; the 'try' silently no-ops if there's no image.
+  osascript >/dev/null 2>&1 <<EOF || true
+try
+  set imgData to (the clipboard as «class PNGf»)
+  set fp to open for access (POSIX file "$tmp") with write permission
+  set eof fp to 0
+  write imgData to fp
+  close access fp
+end try
+EOF
+  [[ -s "$tmp" ]] || die "No image on the clipboard. Copy/screenshot an image first (e.g. Cmd+Ctrl+Shift+4), then retry."
+
+  local dest; dest="$(basename "${1:-pasted-$(date +%Y%m%d-%H%M%S).png}")"
+  docker cp "$tmp" "$name:/work/$dest" >/dev/null 2>&1 || { rm -f "$tmp"; die "Failed to copy the image into the cage."; }
+  rm -f "$tmp"
+  log "📋 Pasted clipboard image into the cage → /work/$dest"
+  log "   In the caged Claude, reference it like:  look at /work/$dest"
+  printf '/work/%s\n' "$dest"   # stdout: the path, so this is scriptable
+}
+
 usage() {
   cat <<EOF
 cage — throwaway Docker box that runs Claude Code recklessly, safely.
@@ -466,6 +498,8 @@ USAGE
                      pass through to claude. On exit, rescues any unpushed work.
                      (First ever run auto-prompts a one-time Claude login.)
   cage shell         Same spin-up, but drop into a bash shell instead of Claude.
+  cage paste [name]  Copy the macOS clipboard image into the running cage's /work and print its
+                     path (containers can't read the host clipboard). Run from another terminal.
 
 SETUP
   cage setup         One-time interactive bootstrap: writes cage.config (GitHub token, git
@@ -489,6 +523,7 @@ EOF
 case "${1:-}" in
   ""|run)            shift || true; cmd_run "$@" ;;
   shell|console)     cmd_shell ;;
+  paste|img)         shift || true; cmd_paste "$@" ;;
   setup)             cmd_setup ;;
   gh-token)          cmd_gh_token ;;
   login)             cmd_login ;;
