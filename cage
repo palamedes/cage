@@ -213,7 +213,14 @@ spin_up() {
   # Bare patterns (no leading */) match at any depth on both bsdtar and GNU tar.
   local n; local excl=()
   for n in $COPY_EXCLUDES; do excl+=( --exclude="$n" ); done
-  tar -C "$PROJ" ${excl[@]+"${excl[@]}"} -cf - . | docker cp - "$CID:/work"
+  # macOS bsdtar embeds extended attributes (com.apple.metadata:*, resource forks) by
+  # default. The Linux container rejects them on extract (lsetxattr … operation not
+  # supported), which aborts the whole copy ("Successfully copied 0B"). Strip them when
+  # the local tar supports it; both flags are harmless / a no-op on GNU tar (Linux host).
+  local meta=()
+  tar --no-xattrs       --version >/dev/null 2>&1 && meta+=( --no-xattrs )
+  tar --no-mac-metadata --version >/dev/null 2>&1 && meta+=( --no-mac-metadata )
+  tar -C "$PROJ" ${meta[@]+"${meta[@]}"} ${excl[@]+"${excl[@]}"} -cf - . | docker cp - "$CID:/work"
 
   docker start "$CID" >/dev/null   # entrypoint chowns /work + sets git identity / GH_TOKEN
 
