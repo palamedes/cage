@@ -26,6 +26,10 @@
 # export CAGE_SYNC_GLOBAL_CLAUDE=1
 # Also copy ~/.claude/settings.json (off by default — its hooks/paths may not exist in-cage):
 # export CAGE_SYNC_SETTINGS=0
+# Claude UI theme inside the cage. Blank mirrors the theme you run on the host so the agent
+# matches your terminal (otherwise Claude falls back to its non-ANSI default — too light in an
+# ANSI terminal). Set explicitly to override, e.g. dark-ansi / light-ansi / dark / light:
+# export CAGE_CLAUDE_THEME=""
 # Leave a .cage breadcrumb in each project (what past cage sessions did here). The agent is
 # asked to append a dated summary; cage adds a mechanical line (commits/branches). Auto-
 # excluded from git. Set to 0 to disable:
