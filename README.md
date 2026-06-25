@@ -150,16 +150,16 @@ Change or add ports with `export CAGE_PORTS="4000 5173"` in `cage.config` (space
 `""` publishes nothing). Ports are fixed when the container is created, so changing this
 takes effect on the next `cage` run.
 
-## Session memory (`.cage` breadcrumb)
+## Session memory (`.cage` log)
 
-Because every cage is ephemeral and your dir is only ever a *copy*, cage leaves a small
-`.cage` file in the project dir on the host so future cages know what happened here:
+Because every cage is ephemeral and your dir is only ever a *copy*, cage keeps a small
+`.cage` file in the project so future cages know what happened here:
 
 - On spin-up, cage prints the previous notes and makes `.cage` available at `/work/.cage`.
 - During the session, Claude is told (via an appended system prompt) to read `/work/.cage`
   for context and append a short dated summary of what it did before finishing.
-- On exit, cage appends a mechanical line (commits / branches pushed) and copies the file
-  back to the host.
+- On exit, cage appends a mechanical line (commits / branches pushed), caps the file to the
+  most recent 40 entries, copies it back to the host, and commits it **as its own commit**.
 
 ```
 ## 2026-06-18 10:42
@@ -167,8 +167,16 @@ _Added rate-limiting to the API and a spec; pushed je-fix/ratelimit. TODO: wire 
 — cage: pushed je-fix/ratelimit (a1b2c3d); 2 commit(s), 5 file(s)
 ```
 
-`.cage` is auto-excluded from git (`.git/info/exclude`), so it never gets committed or
-clutters `git status`. Disable with `export CAGE_BREADCRUMB=0` in `cage.config`.
+`.cage` is a **tracked, committed file** — git is the only durable store for an ephemeral
+cage, so committing is what makes the log survive teardown. It's committed separately from
+your code (a no-op session still records its log) and kept secret-free (only branch names,
+short SHAs, and counts — never tokens or remote URLs).
+
+The log is capped at the **40 most recent entries**; older ones are trimmed off the top but
+are *not* lost — every trimmed entry still lives permanently in history (`git log -- .cage`).
+Earlier versions of cage git-*excluded* `.cage`; cage now removes that `.git/info/exclude`
+entry automatically the next time it runs. If the dir isn't a git repo, cage just keeps the
+local file. Disable the whole thing with `export CAGE_BREADCRUMB=0` in `cage.config`.
 
 ## Notes & limitations
 
