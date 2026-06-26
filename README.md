@@ -211,15 +211,22 @@ repos, **not** Docker Desktop. Most of what cage needs (`git`, `bash`, GNU `tar`
 ships with the base system already. `osascript` is macOS-only and used solely by `cage paste`;
 the rest of cage doesn't touch it, so you can ignore it on Linux.
 
-**1. Docker Engine — required (the only hard dependency):**
+**1. Docker Engine + buildx — required (the only hard dependency):**
 
 ```bash
-sudo pacman -S docker
+sudo pacman -S docker docker-buildx
 sudo systemctl enable --now docker.service
 
 # Let cage talk to Docker as your user — cage runs `docker` with no sudo.
 sudo usermod -aG docker $USER
 ```
+
+> `docker-buildx` is not optional on modern Docker (23+). cage builds its image with BuildKit,
+> which the `docker` package no longer bundles — without buildx the build aborts with
+> `BuildKit is enabled but the buildx component is missing`, and cage then falls back to trying
+> to *pull* `cage:…` from a registry, which fails with `pull access denied`. buildx is a
+> client-side CLI plugin, so installing it needs no daemon restart; verify with
+> `docker buildx version`.
 
 Then **log out of your session and back in** so the new group takes effect (a fresh terminal tab
 is *not* enough — it inherits the old login session's groups; `newgrp docker` works for one shell
