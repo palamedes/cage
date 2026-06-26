@@ -196,3 +196,58 @@ local file. Disable the whole thing with `export CAGE_BREADCRUMB=0` in `cage.con
   `cage.config.example`, `README.md`.
 - **Gitignored:** `cage.config` (your secrets) and `cage-rescue-*` artifacts.
 - **Docker:** per-stack images (`cage:<hash>`) and the `cage_claude` login volume.
+
+## Installing on CachyOS / Arch Linux
+
+The main instructions assume macOS + Docker Desktop. On Arch-based distros (CachyOS, Manjaro,
+EndeavourOS…) the only real difference is Docker: you want **Docker Engine** from the official
+repos, **not** Docker Desktop. Most of what cage needs (`git`, `bash`, GNU `tar`, `sha256sum`)
+ships with the base system already. `osascript` is macOS-only and used solely by `cage paste`;
+the rest of cage doesn't touch it, so you can ignore it on Linux.
+
+**1. Docker Engine — required (the only hard dependency):**
+
+```bash
+sudo pacman -S docker
+sudo systemctl enable --now docker.service
+
+# Let cage talk to Docker as your user — cage runs `docker` with no sudo.
+sudo usermod -aG docker $USER
+```
+
+Then **log out of your session and back in** so the new group takes effect (a fresh terminal tab
+is *not* enough — it inherits the old login session's groups; `newgrp docker` works for one shell
+in a pinch). Verify with:
+
+```bash
+id -nG | tr ' ' '\n' | grep -x docker    # should print "docker"
+docker info                              # should succeed with no sudo
+```
+
+> If `docker info` shows `permission denied while trying to connect to the docker API at
+> unix:///var/run/docker.sock`, the daemon is fine — your **current shell** just hasn't picked up
+> the `docker` group yet. Log out/in (or `newgrp docker`) and retry.
+
+**2. GitHub CLI — optional (enables `git push` + `gh` PRs from inside the cage):**
+
+```bash
+sudo pacman -S github-cli
+gh auth login
+```
+
+Without it you can still paste a `GH_TOKEN` into `cage.config` by hand.
+
+**3. Bootstrap cage:**
+
+```bash
+cd ~/path/to/cage
+./cage setup
+```
+
+> **PATH symlink on Linux:** `cage setup` looks for `/opt/homebrew/bin`, `/usr/local/bin`, or
+> `$HOME/bin` to symlink `cage` into. On Arch, `/usr/local/bin` exists but isn't user-writable and
+> `~/bin` may not exist, so the symlink step may be skipped. Just do it yourself:
+>
+> ```bash
+> mkdir -p ~/.local/bin && ln -sf "$(pwd)/cage" ~/.local/bin/cage   # ensure ~/.local/bin is on $PATH
+> ```
