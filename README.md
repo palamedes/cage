@@ -145,6 +145,45 @@ git fetch ./cage-rescue-<ts>.bundle '*:*'          # recover committed branches
 git apply ./cage-rescue-<ts>-uncommitted.patch      # recover uncommitted changes
 ```
 
+### Creating pull requests
+
+**`git` alone cannot open a PR on GitHub.** A pull request is a GitHub *product* feature, not
+part of the git protocol — `git push` only moves commits and branches; it has no concept of a
+PR. (GitLab bolted PR-creation onto push via `git push -o merge_request.create`; GitHub
+deliberately never did, so that trick doesn't help here.) To actually open the PR you need
+*something that talks to GitHub's API*. Three ways, from inside the cage:
+
+| Method | Needs a token in the cage? | Notes |
+|---|---|---|
+| `gh pr create` | ✅ `GH_TOKEN` | The convenient path; `gh` is pre-installed in the image. |
+| `curl` to the REST API | ✅ a token | `POST /repos/<owner>/<repo>/pulls`. Same auth as `gh`, just lower-level; `curl` is already in the image. |
+| **Web "compare" URL** | ❌ none | Push the branch (SSH or token), then open `https://github.com/<owner>/<repo>/compare/main...<branch>?expand=1` in *your* browser and click **Create pull request**. |
+
+So: **push** can go over forwarded **SSH keys** *or* `GH_TOKEN`, but **opening a PR
+programmatically** (the `gh` / `curl` rows) needs a **`GH_TOKEN`** — SSH does nothing for the
+GitHub API. If you're happy clicking a browser link you need neither `gh` nor a token; if you
+want the agent to run `gh pr create` itself, set up `GH_TOKEN` first:
+
+```bash
+# on the host (Arch/CachyOS shown; macOS: brew install gh):
+sudo pacman -S github-cli
+gh auth login                 # GitHub.com → HTTPS → login with a web browser
+cd ~/path/to/cage && ./cage gh-token   # imports the token into cage.config
+./cage doctor                 # confirm: "GitHub: GH_TOKEN set"
+```
+
+`GH_TOKEN` is baked in when the container is created, so **exit and relaunch any running cage**
+for it to take effect. Once set, the cage's entrypoint rewrites `git@github.com:` remotes to
+the HTTPS token URL, so both `git push` *and* `gh pr create` go through the token (your SSH
+forwarding becomes redundant — fine to leave on). One nuance: `gh`/API open the PR as the
+**token's owner**, while the compare-URL route opens it as **whoever is logged into github.com
+in your browser**.
+
+> Heads-up: `cage gh-token` (and `cage setup`'s auto-import) need `gh` installed *on the host* —
+> they call `gh auth token`. If `gh` isn't on the host, either install it or paste a PAT directly
+> into `cage.config` as `export GH_TOKEN="ghp_..."` (classic with `repo` scope, or fine-grained
+> with Contents + Pull requests read/write).
+
 ---
 
 ## Reaching a server in the cage (ports)
