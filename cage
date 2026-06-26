@@ -474,11 +474,17 @@ cmd_setup() {
     if _yesno "Log in to Claude now?"; then do_login "$(ensure_base_image)"; else log "Skipped — cage will prompt for login on first run."; fi
   fi
 
-  # 5. PATH symlink
+  # 5. PATH symlink. macOS uses /opt/homebrew/bin or /usr/local/bin; Linux's per-user bin is
+  # ~/.local/bin (and some use ~/bin). On Linux /usr/local/bin exists but isn't user-writable,
+  # so prefer the user dirs — creating ~/.local/bin if needed — and warn if it's not on $PATH.
   if ! command -v cage >/dev/null 2>&1 || [[ "$(command -v cage)" != "$HERE/cage" && ! -L "$(command -v cage 2>/dev/null)" ]]; then
-    local d; for d in /opt/homebrew/bin /usr/local/bin "$HOME/bin"; do
-      if [[ -d "$d" && -w "$d" ]]; then
-        if _yesno "Symlink 'cage' onto your PATH at $d/cage?"; then ln -sf "$HERE/cage" "$d/cage" && log "Symlinked $d/cage"; fi
+    local d; for d in /opt/homebrew/bin /usr/local/bin "$HOME/.local/bin" "$HOME/bin"; do
+      # Use a dir that's writable now, or a user bin dir we can create (~/.local/bin, ~/bin).
+      if [[ -d "$d" && -w "$d" ]] || { [[ "$d" == "$HOME/.local/bin" || "$d" == "$HOME/bin" ]] && [[ ! -e "$d" ]]; }; then
+        if _yesno "Symlink 'cage' onto your PATH at $d/cage?"; then
+          mkdir -p "$d" && ln -sf "$HERE/cage" "$d/cage" && log "Symlinked $d/cage"
+          case ":$PATH:" in *":$d:"*) ;; *) warn "$d isn't on your \$PATH — add it (e.g. 'fish_add_path $d' or 'export PATH=\"$d:\$PATH\"')."; ;; esac
+        fi
         break
       fi
     done

@@ -68,6 +68,12 @@ into any project and type `cage`.
 Requires **Docker Desktop** (running). First build pulls base images + compiles runtimes,
 so it's slow once; cached after.
 
+> **The `cage` symlink dir must be on your `$PATH`.** `setup` symlinks `cage` into the first
+> writable bin dir it finds (macOS: `/opt/homebrew/bin` or `/usr/local/bin`; Linux: `~/.local/bin`,
+> created if missing). If that dir isn't on your `$PATH`, typing `cage` won't find it — add the dir
+> (e.g. `fish_add_path ~/.local/bin`, or `export PATH="$HOME/.local/bin:$PATH"` in your shell rc).
+> `setup` warns you when the dir it picked isn't on `$PATH`.
+
 > **Login is one-time, not per-run.** Your Claude login is stored in a shared Docker volume
 > (`cage_claude`) and reused by every cage. If you skip it in `setup`, the **first** `cage`
 > run auto-prompts the login, then never again (until `cage nuke`).
@@ -244,10 +250,7 @@ cd ~/path/to/cage
 ./cage setup
 ```
 
-> **PATH symlink on Linux:** `cage setup` looks for `/opt/homebrew/bin`, `/usr/local/bin`, or
-> `$HOME/bin` to symlink `cage` into. On Arch, `/usr/local/bin` exists but isn't user-writable and
-> `~/bin` may not exist, so the symlink step may be skipped. Just do it yourself:
->
-> ```bash
-> mkdir -p ~/.local/bin && ln -sf "$(pwd)/cage" ~/.local/bin/cage   # ensure ~/.local/bin is on $PATH
-> ```
+> **PATH symlink on Linux:** `/usr/local/bin` exists on Arch but isn't user-writable, so `cage
+> setup` symlinks `cage` into `~/.local/bin` instead (creating it if needed). Make sure that dir is
+> on your `$PATH` — on CachyOS's default fish shell: `fish_add_path ~/.local/bin`. If you ever need
+> to do it by hand: `mkdir -p ~/.local/bin && ln -sf "$(pwd)/cage" ~/.local/bin/cage`.
