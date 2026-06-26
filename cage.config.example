@@ -14,6 +14,15 @@
 # --- GitHub — enables `git push` (HTTPS) and `gh` (PRs) from inside the cage -----------
 # Easiest: run `cage gh-token` to import from your Mac's gh. Or paste a repo-scoped PAT:
 # export GH_TOKEN="ghp_..."
+#
+# Alternatively (or in addition), cage can forward your host SSH keys into the cage so
+# `git@github.com:` remotes push over SSH — parity with a Mac that pushes over SSH, and the
+# fallback when you have no GH_TOKEN. Default `auto` forwards keys only when ~/.ssh has an
+# id_* key. Note: this copies your PRIVATE key into the (ephemeral) container, which is
+# broader access than a repo-scoped token. Set to 0 to disable, or point at a scoped dir.
+# (PRs via `gh` still need GH_TOKEN — SSH only covers git push/pull.)
+# export CAGE_SSH=auto          # auto | 1 (force) | 0 (off)
+# export CAGE_SSH_DIR="$HOME/.ssh"
 
 # --- Git commit identity used INSIDE the cage for the agent's commits ------------------
 # export GIT_USER_NAME="Your Name"

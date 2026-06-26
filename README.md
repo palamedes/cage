@@ -92,6 +92,12 @@ re-run a specific importer:
   (`export ANTHROPIC_API_KEY="sk-ant-..."` for zero prompts, per-token billing).
 - **GitHub** — `cage gh-token` imports a token from your local `gh` (or paste
   `export GH_TOKEN="ghp_..."`). Enables `git push` + `gh` from inside the cage.
+- **SSH keys** (optional) — if you push over SSH instead of a token, cage can forward your
+  host keys so `git@github.com:` works in the cage. Default `CAGE_SSH=auto` copies `~/.ssh`
+  in whenever it holds an `id_*` key; set `CAGE_SSH=0` to disable, or `CAGE_SSH_DIR` to a
+  scoped dir. This copies your **private key** into the (ephemeral) container — broader access
+  than a repo-scoped token — so prefer `GH_TOKEN` if you can. SSH covers `git push/pull` only;
+  `gh` PRs still need `GH_TOKEN`.
 - **Commit identity** — `export GIT_USER_NAME=…` / `export GIT_USER_EMAIL=…` so the agent's
   commits are attributed to you.
 

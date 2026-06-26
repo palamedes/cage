@@ -45,6 +45,8 @@ COPY_EXCLUDES="${CAGE_COPY_EXCLUDES:-node_modules .venv venv vendor/bundle .bund
 BREADCRUMB="${CAGE_BREADCRUMB:-1}"                   # leave a .cage note of what each session did
 NOTE_FILE="${CAGE_NOTE_FILE:-.cage}"                 # breadcrumb filename in the project dir
 PORTS="${CAGE_PORTS:-4000}"                          # host port(s) to publish (space-separated; "" = none)
+SSH_FORWARD="${CAGE_SSH:-auto}"                      # forward host SSH keys for git@github.com: auto|1|0
+SSH_DIR="${CAGE_SSH_DIR:-$HOME/.ssh}"                # which dir to forward when SSH is on
 
 # Injected into the agent (via --append-system-prompt) so it reads/updates the breadcrumb.
 SYS_NOTE="You are running inside \"cage\", a throwaway Docker container — run commands freely; the host machine is safe and unaffected. A file at /work/${NOTE_FILE} is a committed, running log of the most recent cage sessions in this directory. Read it first for context. Before you finish, append a short dated entry to /work/${NOTE_FILE} summarizing what you did and any follow-ups, formatted as:
@@ -230,6 +232,38 @@ write_breadcrumb() {
   fi
 }
 
+# Copy the host's SSH keys into the already-started container so `git@github.com:` remotes
+# work — parity with a host that pushes over SSH (instead of GH_TOKEN/HTTPS). Keys land in
+# the ephemeral container only: destroyed on exit, never bind-mounted, never committed.
+# Controlled by CAGE_SSH (auto|1|0) and CAGE_SSH_DIR. `auto` forwards only when a private
+# key (id_*) exists in $SSH_DIR. Note: this hands the in-cage agent your private key, which
+# is broader than a repo-scoped token — set CAGE_SSH=0 (or CAGE_SSH_DIR to a scoped dir) to opt out.
+forward_ssh() {
+  case "$SSH_FORWARD" in
+    0|off|no|false) return 0 ;;
+    auto) ls "$SSH_DIR"/id_* >/dev/null 2>&1 || return 0 ;;
+    *)    [[ -d "$SSH_DIR" ]] || { warn "CAGE_SSH set but $SSH_DIR not found — skipping SSH forward."; return 0; } ;;
+  esac
+  [[ -d "$SSH_DIR" ]] || return 0
+  log "🔑 Forwarding SSH keys from $SSH_DIR into the cage (for git@github.com)…"
+  if ! docker cp "$SSH_DIR/." "$CID:/tmp/cage-ssh" >/dev/null 2>&1; then
+    warn "Couldn't copy SSH keys into the container — SSH remotes may not work."; return 0
+  fi
+  docker exec "$CID" bash -lc '
+    set -e
+    mkdir -p ~/.ssh
+    sudo cp -a /tmp/cage-ssh/. ~/.ssh/
+    sudo chown -R cage:cage ~/.ssh
+    sudo rm -rf /tmp/cage-ssh
+    chmod 700 ~/.ssh
+    chmod 600 ~/.ssh/* 2>/dev/null || true
+    chmod 644 ~/.ssh/*.pub 2>/dev/null || true
+    # Trust github.com on first use even if no known_hosts came across.
+    grep -q "^github.com" ~/.ssh/known_hosts 2>/dev/null || \
+      ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null || true
+  ' >/dev/null 2>&1 || warn "SSH key install hit a snag — git@github.com may not authenticate."
+}
+
 # spin_up <image-tag>  -> sets global CID to a started container with code copied in
 spin_up() {
   local tag="$1"
@@ -273,6 +307,8 @@ spin_up() {
   # Guarantee /work is a git repo so the agent can always commit (no host changes). Dirs that
   # are repo roots already brought their .git; subdirs / non-repos get a fresh one here.
   docker exec "$CID" bash -lc 'cd /work && [ -d .git ] || git init -q' || true
+
+  forward_ssh   # copy host SSH keys in so `git@github.com:` remotes work (parity with the Mac)
 
   # Breadcrumb (.cage): a TRACKED, committed log now (no longer git-excluded). Record session
   # start state and show prior notes. We don't touch the container's exclude here; the host's is
@@ -501,7 +537,11 @@ cmd_doctor() {
   elif image_exists "$base" && volume_has_login "$base" >/dev/null 2>&1; then log "Claude auth: logged in (shared volume '$CLAUDE_VOLUME')"
   elif docker volume inspect "$CLAUDE_VOLUME" >/dev/null 2>&1; then warn "Claude auth: volume exists but no login detected — run 'cage login'"
   else warn "Claude auth: not set up yet — run 'cage setup' (or 'cage login')"; fi
-  if [[ -n "${GH_TOKEN:-}" ]]; then log "GitHub: GH_TOKEN set (push + PRs work)"; else warn "GitHub: no GH_TOKEN — run 'cage gh-token' to enable push/PRs"; fi
+  local ssh_on=""
+  if [[ "$SSH_FORWARD" != 0 && "$SSH_FORWARD" != off ]] && ls "$SSH_DIR"/id_* >/dev/null 2>&1; then ssh_on=1; fi
+  if [[ -n "${GH_TOKEN:-}" ]]; then log "GitHub: GH_TOKEN set (push + PRs over HTTPS)"
+  elif [[ -n "$ssh_on" ]]; then log "GitHub: SSH keys in $SSH_DIR will be forwarded (git@github.com push works; 'gh' PRs still need GH_TOKEN)"
+  else warn "GitHub: no GH_TOKEN and no SSH keys — run 'cage gh-token', or add an SSH key to $SSH_DIR"; fi
 }
 
 cmd_ps() {
