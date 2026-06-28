@@ -221,10 +221,27 @@ write_breadcrumb() {
     ' "$PROJ/$NOTE_FILE" > "$PROJ/$NOTE_FILE.tmp" && mv "$PROJ/$NOTE_FILE.tmp" "$PROJ/$NOTE_FILE" || rm -f "$PROJ/$NOTE_FILE.tmp"
   fi
 
+  # A one-file log commit is path-limited (partial). Git REFUSES partial commits while the repo
+  # is mid-merge/-rebase/-cherry-pick/-revert ("fatal: cannot do a partial commit during a
+  # merge"), and folding .cage into an in-progress merge commit would defeat the point of keeping
+  # the log decoupled. Detect those states and skip cleanly — the updated file is already on disk,
+  # so the next session (or the user) commits it once the repo is free.
+  local gitdir mid=""
+  gitdir="$(git -C "$PROJ" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  if [[ -n "$gitdir" ]]; then
+    if   [[ -e "$gitdir/MERGE_HEAD"       ]]; then mid="a merge"
+    elif [[ -e "$gitdir/rebase-merge" || -e "$gitdir/rebase-apply" ]]; then mid="a rebase"
+    elif [[ -e "$gitdir/CHERRY_PICK_HEAD" ]]; then mid="a cherry-pick"
+    elif [[ -e "$gitdir/REVERT_HEAD"      ]]; then mid="a revert"
+    fi
+  fi
+
   # Commit just the log, as its own commit decoupled from the agent's code commits, so even a
   # session with no code changes records durably. Non-git dirs fall back to the plain local file.
   # --no-verify so a host pre-commit hook can't block a mechanical one-file log commit.
-  if [[ -n "$root" ]] && git -C "$PROJ" add -- "$NOTE_FILE" 2>/dev/null \
+  if [[ -n "$root" && -n "$mid" ]]; then
+    warn "$NOTE_FILE updated on disk, but the repo is mid-$mid — leaving it uncommitted. Commit it after you finish the $mid."
+  elif [[ -n "$root" ]] && git -C "$PROJ" add -- "$NOTE_FILE" 2>/dev/null \
      && ! git -C "$PROJ" diff --cached --quiet -- "$NOTE_FILE" 2>/dev/null; then
     git -C "$PROJ" commit -q --no-verify -m "cage: update session log ($ts)" -- "$NOTE_FILE" \
       && log "✅ Committed $NOTE_FILE (kept last 40 entries; older ones live on in git history)." \
