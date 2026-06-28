@@ -178,6 +178,19 @@ write_breadcrumb() {
       && mv "$root/.git/info/exclude.tmp" "$root/.git/info/exclude" || rm -f "$root/.git/info/exclude.tmp"
   fi
 
+  # Make .cage merge as a UNION (keep both sides' lines) instead of conflicting. It's an append-
+  # style log committed on whatever branch is checked out, so when a feature branch carrying its
+  # own .cage entries merges back into a branch that also advanced, a normal merge collides on
+  # every session boundary. Union auto-resolves it; the next run re-trims any duplicates back to
+  # 40. Idempotent (written once per repo) and committed alongside the log below so a fresh clone
+  # is protected from its first session. The unanchored pattern matches .cage in any subdirectory.
+  local attrs=""
+  if [[ -n "$root" ]]; then
+    attrs="$root/.gitattributes"
+    grep -qxF "$NOTE_FILE merge=union" "$attrs" 2>/dev/null \
+      || printf '%s merge=union\n' "$NOTE_FILE" >> "$attrs"
+  fi
+
   local facts after agent_wrote
   facts="$(docker exec "$CID" bash -lc '
     cd /work || exit 0
@@ -241,9 +254,9 @@ write_breadcrumb() {
   # --no-verify so a host pre-commit hook can't block a mechanical one-file log commit.
   if [[ -n "$root" && -n "$mid" ]]; then
     warn "$NOTE_FILE updated on disk, but the repo is mid-$mid — leaving it uncommitted. Commit it after you finish the $mid."
-  elif [[ -n "$root" ]] && git -C "$PROJ" add -- "$NOTE_FILE" 2>/dev/null \
-     && ! git -C "$PROJ" diff --cached --quiet -- "$NOTE_FILE" 2>/dev/null; then
-    git -C "$PROJ" commit -q --no-verify -m "cage: update session log ($ts)" -- "$NOTE_FILE" \
+  elif [[ -n "$root" ]] && git -C "$PROJ" add -- "$NOTE_FILE" "$attrs" 2>/dev/null \
+     && ! git -C "$PROJ" diff --cached --quiet -- "$NOTE_FILE" "$attrs" 2>/dev/null; then
+    git -C "$PROJ" commit -q --no-verify -m "cage: update session log ($ts)" -- "$NOTE_FILE" "$attrs" \
       && log "✅ Committed $NOTE_FILE (kept last 40 entries; older ones live on in git history)." \
       || warn "Couldn't commit $NOTE_FILE — it's saved on disk; commit it when the repo is free."
   fi
