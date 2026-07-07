@@ -210,7 +210,9 @@ Because every cage is ephemeral and your dir is only ever a *copy*, cage keeps a
 - During the session, Claude is told (via an appended system prompt) to read `/work/.cage`
   for context and append a short dated summary of what it did before finishing.
 - On exit, cage appends a mechanical line (commits / branches pushed), caps the file to the
-  most recent 40 entries, copies it back to the host, and commits it **as its own commit**.
+  most recent 40 entries, copies it back to the host, commits it **as its own commit**, and
+  pushes that commit to the remote so it travels with the code it describes (see
+  [`CAGE_REPO_SYNC`](#keeping-host-cage-and-remote-in-step-cage_repo_sync)).
 
 ```
 ## 2026-06-18 10:42
@@ -228,6 +230,30 @@ are *not* lost — every trimmed entry still lives permanently in history (`git 
 Earlier versions of cage git-*excluded* `.cage`; cage now removes that `.git/info/exclude`
 entry automatically the next time it runs. If the dir isn't a git repo, cage just keeps the
 local file. Disable the whole thing with `export CAGE_BREADCRUMB=0` in `cage.config`.
+
+## Keeping host, cage, and remote in step (`CAGE_REPO_SYNC`)
+
+A session's **code** reaches the remote by `git push` from *inside* the container, but the
+host clone you launched from never sees that push — and the `.cage` log commit lands on the
+*host*. Without reconciliation the three copies silently fork: the next cage starts from a
+stale HEAD with stale `origin/*` refs (pushed work looks lost; version numbers get reused),
+and the host ends up ahead of the remote by a log commit, so your next plain `git pull`
+fails with "divergent branches". `CAGE_REPO_SYNC` (default on) closes the loop:
+
+- **At spin-up**, cage runs `git fetch` on the host clone before copying, so the cage (and
+  your clone) see true remote state. If the clone was strictly *behind* its upstream, the
+  cage's throwaway copy is fast-forwarded so the agent starts from what the remote actually
+  has. If clone and upstream have **diverged**, nothing is merged — instead the agent gets a
+  loud `GIT WARNING` in its system prompt telling it to reconcile before trusting HEAD.
+- **At exit**, after committing the `.cage` log, cage fetches again, **rebases the log
+  commit onto the moved upstream** (conflict-free — `.cage` merges as a union) and **pushes
+  it**, on the same rail as the code it describes. Only commits authored by cage
+  (`cage: update session log …`) are ever rebased or pushed; your own unpushed commits are
+  left exactly where they are.
+
+All network git commands run non-interactively (they fail rather than prompt), and every
+failure degrades to a warning — cage never blocks a session on the network. Disable with
+`export CAGE_REPO_SYNC=0` in `cage.config`.
 
 ## Notes & limitations
 

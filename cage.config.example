@@ -45,6 +45,12 @@
 # to disable:
 # export CAGE_BREADCRUMB=1
 # export CAGE_NOTE_FILE=.cage
+# Keep host clone, cage, and remote from silently diverging: at spin-up, fetch the remote
+# (so the cage sees true remote state, and fast-forwards its copy when the host clone was
+# behind — e.g. a prior session pushed); at exit, rebase+push the .cage log commit so the
+# host is never left ahead of the remote in a way that breaks your next `git pull`. Only
+# cage's own log commits are ever rebased/pushed — never your commits. Set to 0 to disable:
+# export CAGE_REPO_SYNC=1
 # Host port(s) published from the cage so a server you start inside is reachable from your
 # Mac at http://localhost:<port>. Space-separated; set to "" to publish nothing. PORT is set
 # inside the container to the first one, and the agent is told to bind 0.0.0.0:<port>.

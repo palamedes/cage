@@ -47,6 +47,7 @@ NOTE_FILE="${CAGE_NOTE_FILE:-.cage}"                 # breadcrumb filename in th
 PORTS="${CAGE_PORTS:-4000}"                          # host port(s) to publish (space-separated; "" = none)
 SSH_FORWARD="${CAGE_SSH:-auto}"                      # forward host SSH keys for git@github.com: auto|1|0
 SSH_DIR="${CAGE_SSH_DIR:-$HOME/.ssh}"                # which dir to forward when SSH is on
+REPO_SYNC="${CAGE_REPO_SYNC:-1}"                     # keep host/cage/remote in step: fetch at spin-up, push the .cage log commit at exit
 
 # Injected into the agent (via --append-system-prompt) so it reads/updates the breadcrumb.
 SYS_NOTE="You are running inside \"cage\", a throwaway Docker container — run commands freely; the host machine is safe and unaffected. A file at /work/${NOTE_FILE} is a committed, running log of the most recent cage sessions in this directory. Read it first for context. Before you finish, append a short dated entry to /work/${NOTE_FILE} summarizing what you did and any follow-ups, formatted as:
@@ -79,6 +80,19 @@ host_theme() {
 need_docker() {
   command -v docker >/dev/null 2>&1 || die "Docker not found. Install Docker Desktop and try again."
   docker info >/dev/null 2>&1 || die "Docker daemon not reachable. Is Docker Desktop running?"
+}
+
+# git_net — a network git command that NEVER prompts (no credential prompt, no SSH
+# passphrase prompt). cage runs these unattended around a session; a hang here would look
+# like a wedged cage. Fails instead, and the caller degrades to a warning.
+git_net() { GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh} -o BatchMode=yes" git "$@"; }
+
+# branch_remote <repo> — the remote of the checked-out branch (origin when unset/detached).
+branch_remote() {
+  local br r=""
+  br="$(git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  [[ -n "$br" && "$br" != "HEAD" ]] && r="$(git -C "$1" config "branch.$br.remote" 2>/dev/null || true)"
+  printf '%s' "${r:-origin}"
 }
 
 # Set/replace an `export VAR="value"` line in cage.config (used by token importers).
@@ -154,8 +168,23 @@ have_login() {
 CID=""
 START_SHA=""        # /work HEAD at spin-up, to scope "this session's" commits
 NOTE_BEFORE="none"  # hash of /work/.cage at spin-up, to tell if the agent updated it
+SYNC_NOTE=""        # spin-up divergence warning for the agent's system prompt (see spin_up)
 cleanup() { [[ -n "$CID" ]] && docker rm -f "$CID" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
+
+# mid_state — "a merge"/"a rebase"/"a cherry-pick"/"a revert" if the host repo is mid-way
+# through one (empty otherwise). While one is in progress we neither partial-commit the log
+# (git refuses) nor fetch/rebase/push behind the user's back.
+mid_state() {
+  local gitdir
+  gitdir="$(git -C "$PROJ" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  [[ -n "$gitdir" ]] || return 0
+  if   [[ -e "$gitdir/MERGE_HEAD"       ]]; then echo "a merge"
+  elif [[ -e "$gitdir/rebase-merge" || -e "$gitdir/rebase-apply" ]]; then echo "a rebase"
+  elif [[ -e "$gitdir/CHERRY_PICK_HEAD" ]]; then echo "a cherry-pick"
+  elif [[ -e "$gitdir/REVERT_HEAD"      ]]; then echo "a revert"
+  fi
+}
 
 # End-of-session: append exactly one dated entry to /work/.cage, copy it back to the host, cap
 # it to the most recent 40 entries, and commit it to the host repo as its own commit. .cage is
@@ -210,8 +239,13 @@ write_breadcrumb() {
   after="$(docker exec "$CID" bash -lc "cd /work && [ -f '$NOTE_FILE' ] && sha256sum '$NOTE_FILE' | cut -d' ' -f1 || echo none" 2>/dev/null || echo none)"
   [[ "$after" != "$NOTE_BEFORE" ]] && agent_wrote=1 || agent_wrote=0
 
-  # Nothing committed and the agent left no note → don't clutter the log (or the repo history).
-  [[ -z "$facts" && "$agent_wrote" == 0 ]] && return 0
+  # Nothing committed and the agent left no note → don't clutter the log (or the repo
+  # history). Still reconcile with the remote, so log commits stranded by EARLIER sessions
+  # heal even on a no-op run.
+  if [[ -z "$facts" && "$agent_wrote" == 0 ]]; then
+    [[ -n "$root" && -z "$(mid_state)" ]] && sync_host_log "$root"
+    return 0
+  fi
 
   local ts; ts="$(date '+%Y-%m-%d %H:%M')"
   docker exec "$CID" bash -lc "
@@ -239,15 +273,7 @@ write_breadcrumb() {
   # merge"), and folding .cage into an in-progress merge commit would defeat the point of keeping
   # the log decoupled. Detect those states and skip cleanly — the updated file is already on disk,
   # so the next session (or the user) commits it once the repo is free.
-  local gitdir mid=""
-  gitdir="$(git -C "$PROJ" rev-parse --absolute-git-dir 2>/dev/null || true)"
-  if [[ -n "$gitdir" ]]; then
-    if   [[ -e "$gitdir/MERGE_HEAD"       ]]; then mid="a merge"
-    elif [[ -e "$gitdir/rebase-merge" || -e "$gitdir/rebase-apply" ]]; then mid="a rebase"
-    elif [[ -e "$gitdir/CHERRY_PICK_HEAD" ]]; then mid="a cherry-pick"
-    elif [[ -e "$gitdir/REVERT_HEAD"      ]]; then mid="a revert"
-    fi
-  fi
+  local mid; mid="$(mid_state)"
 
   # Commit just the log, as its own commit decoupled from the agent's code commits, so even a
   # session with no code changes records durably. Non-git dirs fall back to the plain local file.
@@ -259,6 +285,58 @@ write_breadcrumb() {
     git -C "$PROJ" commit -q --no-verify -m "cage: update session log ($ts)" -- "$NOTE_FILE" "$attrs" \
       && log "✅ Committed $NOTE_FILE (kept last 40 entries; older ones live on in git history)." \
       || warn "Couldn't commit $NOTE_FILE — it's saved on disk; commit it when the repo is free."
+  fi
+
+  # Put the log commit on the same rail as the code it describes (see sync_host_log).
+  if [[ -n "$root" && -z "$mid" ]]; then sync_host_log "$root"; fi
+}
+
+# sync_host_log <root> — reconcile the host clone with its upstream after the log commit.
+# The session's code commits reach the remote from INSIDE the container, so the remote can
+# be ahead of the host clone; meanwhile the .cage log commit above landed only on the host.
+# Left alone, the host forks from the remote: the user's next plain `git pull` fails with
+# "divergent branches", and the next cage sees a log describing work it can't find. Fix:
+# fetch, rebase our log commit(s) onto the moved upstream (conflict-free — .cage merges as
+# union), and push them up like the code they describe. Commits that aren't cage's own log
+# commits are NEVER rebased or pushed behind the user's back.
+sync_host_log() {
+  local root="$1"
+  [[ "$REPO_SYNC" == 1 ]] || return 0
+  local br remote u
+  br="$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  [[ -n "$br" && "$br" != "HEAD" ]] || return 0
+  remote="$(branch_remote "$root")"
+  git -C "$root" remote get-url "$remote" >/dev/null 2>&1 || return 0
+  git_net -C "$root" fetch -q "$remote" 2>/dev/null \
+    || { warn "Couldn't fetch $remote — skipping the $NOTE_FILE log-commit sync."; return 0; }
+  u="$(git -C "$root" rev-parse --abbrev-ref "$br@{u}" 2>/dev/null || true)"
+  [[ -n "$u" ]] || return 0
+
+  local counts behind ahead
+  counts="$(git -C "$root" rev-list --left-right --count "$u...HEAD" 2>/dev/null || true)"
+  read -r behind ahead <<<"$counts"
+  [[ "${ahead:-0}" -gt 0 ]] || return 0   # nothing local-only → the user's next pull fast-forwards
+
+  # Only cage's own log commits are ours to move. Anything else stays put: the user pushes
+  # their own commits on their own schedule.
+  if git -C "$root" log --format=%s "$u..$br" 2>/dev/null | grep -vq '^cage: update session log'; then
+    [[ "${behind:-0}" -gt 0 ]] && warn "Your branch and $u have diverged (local commits + remote moved) — reconcile with 'git pull --rebase' when ready."
+    return 0
+  fi
+
+  if [[ "${behind:-0}" -gt 0 ]]; then
+    # The session pushed code the host doesn't have yet — replay the log commit(s) on top.
+    if ! git -C "$root" rebase -q --autostash "$u" >/dev/null 2>&1; then
+      git -C "$root" rebase --abort >/dev/null 2>&1 || true
+      warn "Couldn't rebase the $NOTE_FILE log commit onto $u — run 'git pull --rebase' to reconcile."
+      return 0
+    fi
+    log "⏩ Rebased the $NOTE_FILE log commit onto $u (the session pushed code there)."
+  fi
+  if git_net -C "$root" push -q "$remote" "$br" >/dev/null 2>&1; then
+    log "⬆️  Pushed the $NOTE_FILE log commit to $remote — host, remote, and future cages agree."
+  else
+    warn "Couldn't push the $NOTE_FILE log commit — your clone is ahead of $u; 'git push' when ready."
   fi
 }
 
@@ -300,6 +378,22 @@ spin_up() {
   local name="cage_$(proj_name)_$(proj_hash)"
   docker rm -f "$name" >/dev/null 2>&1 || true   # clear any stale container for this dir
 
+  # Fetch BEFORE copying, so the cage (and this clone's remote-tracking refs) reflect the
+  # true remote state. Sessions push from inside the container, so a host clone that never
+  # fetches hands every new cage stale origin/* refs — a prior session's pushed work looks
+  # lost, and `git status` claims "ahead by N" when the remote actually moved on. Fetch only
+  # touches remote-tracking refs (never the working tree); failure degrades to a warning.
+  SYNC_NOTE=""
+  local sroot; sroot="$(git -C "$PROJ" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ "$REPO_SYNC" == 1 && "$sroot" == "$PROJ" ]]; then
+    local sremote; sremote="$(branch_remote "$PROJ")"
+    if git -C "$PROJ" remote get-url "$sremote" >/dev/null 2>&1; then
+      log "Fetching $sremote (refreshing remote-tracking refs before the copy)…"
+      git_net -C "$PROJ" fetch -q "$sremote" 2>/dev/null \
+        || warn "Couldn't fetch $sremote — the cage's view of the remote may be stale."
+    fi
+  fi
+
   # Publish cage's port(s) to the host (bound to localhost only — not exposed to your LAN).
   # PORT is set to the first so frameworks that honor it pick it up automatically.
   local p; local pargs=(); local first="${PORTS%% *}"
@@ -337,6 +431,41 @@ spin_up() {
   # Guarantee /work is a git repo so the agent can always commit (no host changes). Dirs that
   # are repo roots already brought their .git; subdirs / non-repos get a fresh one here.
   docker exec "$CID" bash -lc 'cd /work && [ -d .git ] || git init -q' || true
+
+  # Bring the throwaway copy current: if the host clone was strictly BEHIND its upstream
+  # (a prior session pushed; the host never pulled), fast-forward /work so the agent starts
+  # from what the remote actually has — uncommitted changes ride along, and ff refuses
+  # rather than clobbering them. If host and upstream DIVERGED, don't guess: tell the agent
+  # loudly (SYNC_NOTE goes into its system prompt) so it doesn't trust a stale HEAD, declare
+  # pushed work "lost", or reuse version numbers. Needs no network — refs were just fetched.
+  if [[ "$REPO_SYNC" == 1 ]]; then
+    local sync
+    sync="$(docker exec "$CID" bash -lc '
+      cd /work || exit 0
+      u=$(git rev-parse --abbrev-ref @{u} 2>/dev/null) || exit 0
+      set -- $(git rev-list --left-right --count "$u...HEAD" 2>/dev/null)
+      behind=${1:-0}; ahead=${2:-0}
+      [ "$behind" -gt 0 ] || exit 0
+      if [ "$ahead" -eq 0 ] && git merge --ff-only -q "$u" >/dev/null 2>&1; then
+        echo "ffwd $behind $u"
+      elif [ "$ahead" -eq 0 ]; then
+        echo "stuck $behind $u"
+      else
+        echo "diverged $behind $ahead $u"
+      fi
+    ' 2>/dev/null || true)"
+    local w n a u
+    case "$sync" in
+      ffwd*)     read -r w n u <<<"$sync"
+                 log "⏩ Fast-forwarded /work to $u (+$n commit(s) the host clone hadn't pulled)." ;;
+      stuck*)    read -r w n u <<<"$sync"
+                 SYNC_NOTE="GIT WARNING: $u is $n commit(s) ahead of HEAD and a fast-forward failed (uncommitted changes are probably in the way). HEAD is STALE — reconcile with $u (git log HEAD..$u) before trusting HEAD, reusing version numbers, or treating work described in $NOTE_FILE as lost."
+                 warn "/work is behind $u and couldn't fast-forward — the agent has been warned." ;;
+      diverged*) read -r w n a u <<<"$sync"
+                 SYNC_NOTE="GIT WARNING: HEAD and $u have DIVERGED — $u has $n commit(s) not in HEAD, HEAD has $a commit(s) not on $u. Work described in $NOTE_FILE may exist only on the remote. Inspect 'git log HEAD..$u' and reconcile before trusting HEAD or reusing version numbers."
+                 warn "This clone and $u have diverged — the agent has been warned." ;;
+    esac
+  fi
 
   forward_ssh   # copy host SSH keys in so `git@github.com:` remotes work (parity with the Mac)
 
@@ -447,9 +576,12 @@ cmd_run() {
   local tag; tag="$(ensure_image)"
   spin_up "$tag"
 
-  # Build the agent's appended system prompt from the breadcrumb + port guidance.
+  # Build the agent's appended system prompt from the breadcrumb + sync state + port guidance.
   local first="${PORTS%% *}" sysnote=""
   [[ "$BREADCRUMB" == 1 ]] && sysnote="$SYS_NOTE"
+  [[ -n "$SYNC_NOTE" ]] && sysnote="${sysnote:+$sysnote
+
+}$SYNC_NOTE"
   if [[ -n "$PORTS" ]]; then
     local p
     for p in $PORTS; do log "🌐 Published http://localhost:$p  → have the server bind 0.0.0.0:$p"; done
