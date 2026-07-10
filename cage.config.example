@@ -54,6 +54,9 @@
 # Host port(s) published from the cage so a server you start inside is reachable from your
 # Mac at http://localhost:<port>. Space-separated; set to "" to publish nothing. PORT is set
 # inside the container to the first one, and the agent is told to bind 0.0.0.0:<port>.
+# When UNSET (the default), cage auto-picks the first free port in 4000-4009, so parallel
+# or leaked cages never collide. Setting it pins the port(s) exactly — cage then fails fast
+# (naming the holder) if one is already taken, rather than sliding to another.
 # export CAGE_PORTS="4000"
 # Base Node major version used for Claude Code itself:
 # export CAGE_NODE_MAJOR=22

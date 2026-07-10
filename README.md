@@ -192,14 +192,20 @@ cage publishes a host port (default **`4000`**, localhost-only) into the contain
 `PORT` to it, and tells the agent to bind any web server to `0.0.0.0:4000`. So when Claude
 starts a server, you open **http://localhost:4000** on your Mac.
 
+If `4000` is already taken (a second cage running in parallel, a leaked container from a
+session that never tore down, or any dev server on your machine), cage automatically takes
+the first free port in **4000–4009** instead and prints which one it picked — the in-cage
+`PORT` and the agent's bind instructions follow along, so you just open the printed URL.
+
 This matters because a server the agent runs *inside* the container is otherwise invisible to
 your Mac — and "I verified `localhost:3000` returns 200" is true *in the container* but
 unreachable from outside. cage's injected guidance makes the agent bind to the published
 port and report the URL you can actually open.
 
 Change or add ports with `export CAGE_PORTS="4000 5173"` in `cage.config` (space-separated;
-`""` publishes nothing). Ports are fixed when the container is created, so changing this
-takes effect on the next `cage` run.
+`""` publishes nothing). An explicit `CAGE_PORTS` is pinned exactly — no auto-sliding — and
+cage fails fast (naming the container holding it) if one is taken. Ports are fixed when the
+container is created, so changing this takes effect on the next `cage` run.
 
 ## Session memory (`.cage` log)
 

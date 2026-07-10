@@ -45,6 +45,7 @@ COPY_EXCLUDES="${CAGE_COPY_EXCLUDES:-node_modules .venv venv vendor/bundle .bund
 BREADCRUMB="${CAGE_BREADCRUMB:-1}"                   # leave a .cage note of what each session did
 NOTE_FILE="${CAGE_NOTE_FILE:-.cage}"                 # breadcrumb filename in the project dir
 PORTS="${CAGE_PORTS:-4000}"                          # host port(s) to publish (space-separated; "" = none)
+PORTS_SET="${CAGE_PORTS+1}"                          # set → CAGE_PORTS was explicit; unset → default 4000 may auto-slide to 4001-4009
 SSH_FORWARD="${CAGE_SSH:-auto}"                      # forward host SSH keys for git@github.com: auto|1|0
 SSH_DIR="${CAGE_SSH_DIR:-$HOME/.ssh}"                # which dir to forward when SSH is on
 REPO_SYNC="${CAGE_REPO_SYNC:-1}"                     # keep host/cage/remote in step: fetch at spin-up, push the .cage log commit at exit
@@ -86,6 +87,18 @@ need_docker() {
 # passphrase prompt). cage runs these unattended around a session; a hang here would look
 # like a wedged cage. Fails instead, and the caller degrades to a warning.
 git_net() { GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh} -o BatchMode=yes" git "$@"; }
+
+# port_free <port> — true when nothing on the host is listening on 127.0.0.1:<port>.
+# Uses bash's /dev/tcp (works on macOS bash 3.2 and Linux) — a successful connect means taken.
+port_free() { ! (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+
+# port_holder <port> — " (held by container <name>)" when a docker container publishes the
+# port (usually a leaked cage from a session that never tore down), else "".
+port_holder() {
+  local n
+  n="$(docker ps --format '{{.Names}}\t{{.Ports}}' 2>/dev/null | awk -F'\t' -v p=":$1->" 'index($2,p){print $1; exit}')"
+  if [[ -n "$n" ]]; then printf ' (held by container %s)' "$n"; fi
+}
 
 # branch_remote <repo> — the remote of the checked-out branch (origin when unset/detached).
 branch_remote() {
@@ -396,7 +409,25 @@ spin_up() {
 
   # Publish cage's port(s) to the host (bound to localhost only — not exposed to your LAN).
   # PORT is set to the first so frameworks that honor it pick it up automatically.
-  local p; local pargs=(); local first="${PORTS%% *}"
+  # The default port auto-slides: if 4000 is busy (a leaked cage, a host dev server), take
+  # the first free port in 4000-4009 so parallel/stale cages never collide. An explicit
+  # CAGE_PORTS is honored exactly — but checked up front so a taken port fails fast with
+  # the holder's name instead of docker's opaque "port is already allocated" post-copy.
+  local p; local pargs=()
+  if [[ -z "${PORTS_SET:-}" && -n "$PORTS" ]]; then
+    local base="$PORTS" picked=""
+    for (( p = base; p < base + 10; p++ )); do
+      port_free "$p" && { picked="$p"; break; }
+    done
+    [[ -n "$picked" ]] || die "Ports ${base}-$((base + 9)) are all in use. Leaked cages? ('docker ps' / 'cage ps' to see them.) Or set CAGE_PORTS to a free port."
+    [[ "$picked" != "$base" ]] && log "Port $base is busy$(port_holder "$base") — using $picked instead."
+    PORTS="$picked"
+  else
+    for p in $PORTS; do
+      port_free "$p" || die "Host port $p is already in use$(port_holder "$p"). Free it, or change CAGE_PORTS (\"\" publishes none)."
+    done
+  fi
+  local first="${PORTS%% *}"
   for p in $PORTS; do pargs+=( -p "127.0.0.1:$p:$p" ); done
 
   log "Creating ephemeral container from ${tag}"
