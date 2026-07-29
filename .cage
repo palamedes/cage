@@ -1,0 +1,3 @@
+
+## 2026-07-29
+_Updated Claude Code in cage 2.1.193 → 2.1.220 (non-persistent; bump the base image to keep it). Investigated missing newer Opus in /model: cage injects ANTHROPIC_API_KEY at the container level (in PID 1 env), which overrides the already-stored, valid Max OAuth login — that's why subscription-only models don't appear. Could not auto-reject the key (harness blanks the key value from all tool views). Fix applied: added `forceLoginMethod: "claudeai"` to ~/.cage-claude/settings.json to force subscription auth on next restart (backup saved). Permanent root fix = stop passing ANTHROPIC_API_KEY into the container host-side._
