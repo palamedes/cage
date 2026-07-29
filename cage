@@ -430,6 +430,24 @@ spin_up() {
   local first="${PORTS%% *}"
   for p in $PORTS; do pargs+=( -p "127.0.0.1:$p:$p" ); done
 
+  # Claude auth: prefer the subscription login stored in the shared volume.
+  # Claude Code prefers an env-var API key over stored OAuth, so forwarding a
+  # host ANTHROPIC_API_KEY into the container shadows a `cage login` subscription
+  # — and hides subscription-only models (e.g. newer Opus) from /model. Only pass
+  # the key through when there's no stored login to fall back to, or when
+  # CAGE_FORCE_API_KEY=1 explicitly opts into API billing.
+  local kargs=()
+  if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+    if [[ "${CAGE_FORCE_API_KEY:-}" == 1 ]]; then
+      kargs+=( -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" )
+      log "Claude auth: forwarding ANTHROPIC_API_KEY (CAGE_FORCE_API_KEY=1)."
+    elif volume_has_login "$tag"; then
+      log "Claude auth: using stored subscription login; ignoring host ANTHROPIC_API_KEY (set CAGE_FORCE_API_KEY=1 to use the key)."
+    else
+      kargs+=( -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" )
+    fi
+  fi
+
   log "Creating ephemeral container from ${tag}"
   CID="$(docker create \
     --name "$name" \
@@ -437,7 +455,7 @@ spin_up() {
     -w /work \
     ${pargs[@]+"${pargs[@]}"} \
     -v "${CLAUDE_VOLUME}:${CLAUDE_DIR}" \
-    -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
+    ${kargs[@]+"${kargs[@]}"} \
     -e GH_TOKEN="${GH_TOKEN:-}" \
     -e GIT_USER_NAME="${GIT_USER_NAME:-}" \
     -e GIT_USER_EMAIL="${GIT_USER_EMAIL:-}" \
@@ -726,8 +744,12 @@ cmd_doctor() {
   need_docker && log "Docker daemon: OK"
   if [[ -f "$HERE/cage.config" ]]; then log "cage.config: present"; else warn "cage.config missing — cp cage.config.example cage.config"; fi
   local base; base="$(image_tag "")"
-  if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then log "Claude auth: ANTHROPIC_API_KEY set"
-  elif image_exists "$base" && volume_has_login "$base" >/dev/null 2>&1; then log "Claude auth: logged in (shared volume '$CLAUDE_VOLUME')"
+  local has_login=""; image_exists "$base" && volume_has_login "$base" >/dev/null 2>&1 && has_login=1
+  if [[ -n "${ANTHROPIC_API_KEY:-}" && "${CAGE_FORCE_API_KEY:-}" == 1 ]]; then log "Claude auth: ANTHROPIC_API_KEY (forced via CAGE_FORCE_API_KEY=1)"
+  elif [[ -n "$has_login" ]]; then
+    [[ -n "${ANTHROPIC_API_KEY:-}" ]] && log "Claude auth: subscription login (shared volume '$CLAUDE_VOLUME') — host ANTHROPIC_API_KEY is set but ignored; CAGE_FORCE_API_KEY=1 to use it" \
+                                      || log "Claude auth: subscription login (shared volume '$CLAUDE_VOLUME')"
+  elif [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then log "Claude auth: ANTHROPIC_API_KEY set (no stored login to fall back to)"
   elif docker volume inspect "$CLAUDE_VOLUME" >/dev/null 2>&1; then warn "Claude auth: volume exists but no login detected — run 'cage login'"
   else warn "Claude auth: not set up yet — run 'cage setup' (or 'cage login')"; fi
   local ssh_on=""

@@ -10,6 +10,10 @@
 # export ANTHROPIC_API_KEY="sk-ant-..."
 # (b) Subscription login — leave the key unset and run `cage login` once; it's stored in
 #     the shared 'cage_claude' volume and reused by every cage (no host creds exposed).
+# Precedence: a stored subscription login WINS over a host ANTHROPIC_API_KEY — cage won't
+# forward the key into the container when the volume has a login (otherwise Claude prefers
+# the key and hides subscription-only models like newer Opus from /model). To force the
+# key even when a login exists, set CAGE_FORCE_API_KEY=1.
 
 # --- GitHub — enables `git push` (HTTPS) and `gh` (PRs) from inside the cage -----------
 # Easiest: run `cage gh-token` to import from your Mac's gh. Or paste a repo-scoped PAT:
